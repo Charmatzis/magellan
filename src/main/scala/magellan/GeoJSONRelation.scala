@@ -17,6 +17,7 @@
 package magellan
 
 import magellan.mapreduce.WholeFileInputFormat
+import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.io.{NullWritable, Text}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SQLContext
@@ -45,6 +46,8 @@ case class GeoJSONRelation(
   extends SpatialRelation {
 
   protected override def _buildScan(): RDD[Array[Any]] = {
+    val conf = sc.hadoopConfiguration
+    FileSystem.getLocal(conf)
     sc.newAPIHadoopFile(
       path,
       classOf[WholeFileInputFormat],
@@ -68,61 +71,3 @@ case class GeoJSONRelation(
     }
   }
 }
-
-private case class Geometry(`type`: String, coordinates: JValue) {
-  def coordinatesToPoint(coordinates: JValue) = {
-    coordinates match {
-      case JArray(List(JDouble(x), JDouble(y))) => Point(x, y)
-      case JArray(List(JDouble(x), JInt(y)))    => Point(x, y.toDouble)
-      case JArray(List(JInt(x), JDouble(y)))    => Point(x.toDouble, y)
-      case JArray(List(JInt(x), JInt(y)))       => Point(x.toDouble, y.toDouble)
-    }
-  }
-
-  def extractPoints(p: List[JValue]) = p.map(coordinatesToPoint)
-
-  def extractPolygon(coordinates: JArray): Polygon = {
-    val JArray(p) = coordinates
-    val rings = p.map { case JArray(q) => extractPoints(q) }
-    val indices = rings.scanLeft(0)((running, current) => running + current.size).dropRight(1)
-    Polygon(indices.toArray, rings.flatten.toArray)
-  }
-
-  val shapes = {
-    `type` match {
-      case "Point" => { List(coordinatesToPoint(coordinates)) }
-      case "LineString" => {
-        val JArray(p) = coordinates.asInstanceOf[JArray]
-        val points = extractPoints(p)
-        //val indices = points.scanLeft(0)((running, current) => running + points.size-1).dropRight(1)
-        val indices = new Array[Int](points.size)
-        List(PolyLine(indices, points.toArray))
-      }
-      case "Polyline" => {
-        val JArray(p) = coordinates.asInstanceOf[JArray]
-        val lineSegments = p.map { case JArray(q) => extractPoints(q) }
-        val indices = lineSegments.scanLeft(0)((running, current) => running + current.size).dropRight(1)
-        List(PolyLine(indices.toArray, lineSegments.flatten.toArray))
-      }
-      case "Polygon" => {
-        val p = coordinates.asInstanceOf[JArray]
-        List(extractPolygon(p))
-      }
-      case "MultiPolygon" => {
-        val JArray(p) = coordinates.asInstanceOf[JArray]
-        // array of polygon coordinates
-        p.map { case polygon @ JArray(q: List[JArray]) => extractPolygon(polygon)}
-      }
-    }
-  }
-
-}
-
-private case class Feature(
-    `type`: String,
-    properties: Option[Map[String, String]],
-    geometry: Geometry)
-
-private case class CRS(`type`: String, properties: Option[Map[String, String]])
-
-private case class GeoJSON(`type`: String, crs: Option[CRS], features: List[Feature])
